@@ -35,4 +35,5 @@ tasks.withType(JavaCompile) {
 tasks.register('runClient', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.agent.AgentPluginTest'
+    enableAssertions = true
 }
