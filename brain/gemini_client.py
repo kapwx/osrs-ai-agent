@@ -1,35 +1,24 @@
 import json
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
 
-class AgentAction(BaseModel):
-    action_type: str = Field(
-        description="The primary action to take: 'IDLE', 'ATTACK_NPC', 'CLICK_OBJECT', 'WALK_TO', 'EAT_FOOD', 'BANK_DEPOSIT'"
-    )
-    target_id: Optional[int] = Field(
-        default=None,
-        description="ID of the target entity, object, or item"
-    )
-    target_name: Optional[str] = Field(
-        default=None,
-        description="Name of the target entity, object, or item (e.g. 'Goblin', 'Tree', 'Lobster')"
-    )
-    coordinates: Optional[Dict[str, int]] = Field(
-        default=None,
-        description="Destination coordinates {'x': ..., 'y': ...} if moving"
-    )
-    reasoning: str = Field(
-        description="Detailed strategic explanation of why this action was decided based on current HP, inventory, and surroundings"
-    )
+from models import AgentAction
 
 class GeminiBrain:
     def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-3.8-flash"):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model_name = model_name
-        self.client = genai.Client(api_key=self.api_key) if self.api_key else None
+        self.client = genai.Client(api_key=self.api_key) if (genai and self.api_key) else None
 
         self.system_instruction = (
             "You are an autonomous AI decision-maker controlling a character in an Old School RuneScape (OSRS) "
@@ -45,6 +34,11 @@ class GeminiBrain:
         )
 
     def analyze_game_state(self, game_state: Dict[str, Any]) -> AgentAction:
+        if not genai:
+            return AgentAction(
+                action_type="IDLE",
+                reasoning="The 'google-genai' library is not installed. Run 'pip install google-genai' if using Gemini."
+            )
         if not self.client:
             return AgentAction(
                 action_type="IDLE",
