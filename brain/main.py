@@ -88,7 +88,10 @@ def receive_game_state(state: Dict[str, Any], background_tasks: BackgroundTasks)
         is_processing = True
         background_tasks.add_task(process_state_decision, state)
 
-    return {"status": "received", "tick": state.get("stats", {}).get("hp_current")}
+    return {
+        "status": "received",
+        "action": latest_action.model_dump() if latest_action else None
+    }
 
 @app.get("/api/action", response_model=AgentAction)
 def get_current_action():
