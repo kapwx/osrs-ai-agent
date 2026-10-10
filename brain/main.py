@@ -6,14 +6,14 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
-from gemini_client import GeminiBrain, AgentAction
+from models import AgentAction
 
 load_dotenv()
 
 app = FastAPI(
     title="OSRS AI Agent Brain",
-    description="Middleware connecting RuneLite game telemetry to Gemini API decision engine",
-    version="1.0.0"
+    description="Middleware connecting RuneLite game telemetry to AI decision engine (GPT-6 Astra / Gemini)",
+    version="1.1.0"
 )
 
 app.add_middleware(
@@ -23,7 +23,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # Shared in-memory state
 latest_game_state: Optional[Dict[str, Any]] = None
 latest_action: AgentAction = AgentAction(
@@ -31,16 +30,42 @@ latest_action: AgentAction = AgentAction(
     reasoning="Awaiting initial game state from RuneLite plugin..."
 )
 
-brain = GeminiBrain(
-    api_key=os.getenv("GEMINI_API_KEY"),
-    model_name=os.getenv("MODEL_NAME", "gemini-3.8-flash")
-)
+# Determine LLM Provider
+provider = os.getenv("LLM_PROVIDER", "").strip().lower()
+if not provider:
+    if os.getenv("OPENAI_API_KEY"):
+        provider = "openai"
+    else:
+        provider = "gemini"
+
+if provider in ["openai", "astra"]:
+    from astra_client import AstraBrain
+    model_name = os.getenv("MODEL_NAME", "gpt-6-astra")
+    print(f"[INIT] Initializing AstraBrain (Model: {model_name})")
+    brain = AstraBrain(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        model_name=model_name,
+        base_url=os.getenv("OPENAI_BASE_URL")
+    )
+else:
+    from gemini_client import GeminiBrain
+    model_name = os.getenv("MODEL_NAME", "gemini-3.8-flash")
+    print(f"[INIT] Initializing GeminiBrain (Model: {model_name})")
+    brain = GeminiBrain(
+        api_key=os.getenv("GEMINI_API_KEY"),
+        model_name=model_name
+    )
+
+is_processing = False
 
 def process_state_decision(state: Dict[str, Any]):
-    global latest_action
-    action = brain.analyze_game_state(state)
-    latest_action = action
-    print(f"[BRAIN DECISION] {action.action_type} -> {action.target_name or 'N/A'}: {action.reasoning}")
+    global latest_action, is_processing
+    try:
+        action = brain.analyze_game_state(state)
+        latest_action = action
+        print(f"[BRAIN DECISION] {action.action_type} -> {action.target_name or 'N/A'}: {action.reasoning}")
+    finally:
+        is_processing = False
 
 @app.get("/")
 def root():
@@ -55,11 +80,13 @@ def receive_game_state(state: Dict[str, Any], background_tasks: BackgroundTasks)
     """
     Endpoint receiving game telemetry from RuneLite AgentPlugin
     """
-    global latest_game_state
+    global latest_game_state, is_processing
     latest_game_state = state
 
-    # Run AI inference in the background so HTTP response to game client remains fast (<10ms)
-    background_tasks.add_task(process_state_decision, state)
+    # Only spawn inference if not already processing
+    if not is_processing:
+        is_processing = True
+        background_tasks.add_task(process_state_decision, state)
 
     return {"status": "received", "tick": state.get("stats", {}).get("hp_current")}
 
