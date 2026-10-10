@@ -75,13 +75,13 @@ def execute_action(action: dict):
     print(f"\n[EXECUTOR] Received Action: {action_type} | Target: {target_name}")
     print(f"[REASON] {reasoning}")
 
+    if action_type == "IDLE":
+        # Nothing to do physically
+        return
+
     if not is_runelite_active():
         print("[WARNING] RuneLite is not the focused window! Skipping physical input.")
         return
-
-    if action_type == "IDLE":
-        # Nothing to do
-        pass
     elif action_type in ["ATTACK_NPC", "CLICK_OBJECT"]:
         coords = action.get("coordinates")
         if coords and "x" in coords and "y" in coords:
