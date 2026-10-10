@@ -1,8 +1,11 @@
 package com.agent;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import com.google.inject.Provides;
+import java.awt.Canvas;
 import java.awt.Rectangle;
+import java.awt.event.KeyEvent;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -16,6 +19,7 @@ import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.InventoryID;
 import net.runelite.api.ItemComposition;
+import net.runelite.api.MenuAction;
 import net.runelite.api.NPC;
 import net.runelite.api.Perspective;
 import net.runelite.api.Player;
@@ -26,6 +30,7 @@ import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
@@ -42,8 +47,8 @@ import okhttp3.Response;
 @Slf4j
 @PluginDescriptor(
     name = "OSRS AI Agent Bridge",
-    description = "Streams local player, environment state, and screen projections to AI Brain Middleware",
-    tags = {"ai", "bot", "agent", "bridge", "telemetry"}
+    description = "Streams telemetry to AI Brain and executes autonomous actions natively inside RuneLite",
+    tags = {"ai", "bot", "agent", "bridge", "telemetry", "executor"}
 )
 public class AgentPlugin extends Plugin
 {
@@ -51,6 +56,9 @@ public class AgentPlugin extends Plugin
 
     @Inject
     private Client client;
+
+    @Inject
+    private ClientThread clientThread;
 
     @Inject
     private AgentConfig config;
@@ -65,6 +73,9 @@ public class AgentPlugin extends Plugin
     private Gson gson;
 
     private int tickCount = 0;
+    private String lastExecutedAction = "";
+    private String lastExecutedTarget = "";
+    private int lastExecutedTick = 0;
 
     @Provides
     AgentConfig provideConfig(ConfigManager configManager)
@@ -75,7 +86,7 @@ public class AgentPlugin extends Plugin
     @Override
     protected void startUp()
     {
-        log.info("OSRS AI Agent Bridge plugin started!");
+        log.info("OSRS AI Agent Bridge plugin started with native action executor!");
     }
 
     @Override
@@ -219,7 +230,7 @@ public class AgentPlugin extends Plugin
         }
         state.put("nearby_npcs", npcs);
 
-        // Send state to backend asynchronously
+        // Send state to backend asynchronously and execute returned AI action natively
         sendStateAsync(state);
     }
 
@@ -237,7 +248,7 @@ public class AgentPlugin extends Plugin
             @Override
             public void onFailure(Call call, IOException e)
             {
-                // Silently ignore connection drops to avoid spamming client logs
+                // Silently ignore connection drops
             }
 
             @Override
@@ -245,6 +256,16 @@ public class AgentPlugin extends Plugin
             {
                 try
                 {
+                    if (response.isSuccessful() && response.body() != null)
+                    {
+                        String respBody = response.body().string();
+                        JsonObject obj = gson.fromJson(respBody, JsonObject.class);
+                        if (obj != null && obj.has("action") && !obj.get("action").isJsonNull())
+                        {
+                            JsonObject actionObj = obj.getAsJsonObject("action");
+                            clientThread.invoke(() -> handleAction(actionObj));
+                        }
+                    }
                     response.close();
                 }
                 catch (Exception ignored)
@@ -252,5 +273,142 @@ public class AgentPlugin extends Plugin
                 }
             }
         });
+    }
+
+    /**
+     * Executes AI actions directly inside the RuneLite client thread.
+     * Works 100% in Alt+Tab, minimized, or background without moving user's OS mouse!
+     */
+    private void handleAction(JsonObject act)
+    {
+        if (act == null || client.getGameState() != GameState.LOGGED_IN)
+        {
+            return;
+        }
+
+        String actionType = act.has("action_type") && !act.get("action_type").isJsonNull()
+            ? act.get("action_type").getAsString() : "IDLE";
+
+        if ("IDLE".equals(actionType))
+        {
+            return;
+        }
+
+        // 1. Dialogue progression reflex
+        if ("CONTINUE_DIALOGUE".equals(actionType))
+        {
+            Canvas canvas = client.getCanvas();
+            if (canvas != null)
+            {
+                KeyEvent press = new KeyEvent(canvas, KeyEvent.KEY_PRESSED, System.currentTimeMillis(), 0, KeyEvent.VK_SPACE, ' ');
+                KeyEvent release = new KeyEvent(canvas, KeyEvent.KEY_RELEASED, System.currentTimeMillis(), 0, KeyEvent.VK_SPACE, ' ');
+                canvas.dispatchEvent(press);
+                canvas.dispatchEvent(release);
+                log.info("[NATIVE AI] Advanced dialogue via Spacebar");
+            }
+            return;
+        }
+
+        String targetName = act.has("target_name") && !act.get("target_name").isJsonNull()
+            ? act.get("target_name").getAsString() : "";
+        String lowerTarget = targetName.toLowerCase().trim();
+
+        Player localPlayer = client.getLocalPlayer();
+
+        // Prevent spamming the exact same action while character is already walking or interacting
+        if (actionType.equals(lastExecutedAction) && targetName.equals(lastExecutedTarget))
+        {
+            if (localPlayer != null && localPlayer.getInteracting() != null)
+            {
+                return; // already talking or fighting target
+            }
+            if (tickCount - lastExecutedTick < 4)
+            {
+                return; // still walking towards target
+            }
+        }
+
+        // 2. NPC Interactions (Talk-to, Walk-to, Attack)
+        if ("TALK_TO_NPC".equals(actionType) || "WALK_TO".equals(actionType) || "ATTACK_NPC".equals(actionType))
+        {
+            NPC targetNpc = null;
+            if (!lowerTarget.isEmpty())
+            {
+                for (NPC npc : client.getNpcs())
+                {
+                    if (npc != null && npc.getName() != null)
+                    {
+                        String npcName = npc.getName().toLowerCase();
+                        if (npcName.contains(lowerTarget) || lowerTarget.contains(npcName))
+                        {
+                            targetNpc = npc;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (targetNpc != null)
+            {
+                MenuAction menuAction = "ATTACK_NPC".equals(actionType)
+                    ? MenuAction.NPC_SECOND_OPTION
+                    : MenuAction.NPC_FIRST_OPTION;
+                String option = "ATTACK_NPC".equals(actionType) ? "Attack" : "Talk-to";
+
+                log.info("[NATIVE AI] Interacting with NPC: {} ({})", targetNpc.getName(), menuAction);
+                client.menuAction(0, 0, menuAction, targetNpc.getIndex(), 0, option, targetNpc.getName());
+
+                lastExecutedAction = actionType;
+                lastExecutedTarget = targetName;
+                lastExecutedTick = tickCount;
+                return;
+            }
+            else if (act.has("coordinates") && !act.get("coordinates").isJsonNull())
+            {
+                JsonObject coords = act.getAsJsonObject("coordinates");
+                int targetX = coords.get("x").getAsInt();
+                int targetY = coords.get("y").getAsInt();
+                WorldPoint wp = new WorldPoint(targetX, targetY, client.getPlane());
+                LocalPoint lp = LocalPoint.fromWorld(client, wp);
+                if (lp != null)
+                {
+                    log.info("[NATIVE AI] Walking to scene coordinates: ({}, {})", lp.getSceneX(), lp.getSceneY());
+                    client.menuAction(lp.getSceneX(), lp.getSceneY(), MenuAction.WALK, 0, 0, "Walk here", "");
+
+                    lastExecutedAction = actionType;
+                    lastExecutedTarget = targetName;
+                    lastExecutedTick = tickCount;
+                    return;
+                }
+            }
+        }
+
+        // 3. Eating Food from Inventory
+        if ("EAT_FOOD".equals(actionType))
+        {
+            ItemContainer inv = client.getItemContainer(InventoryID.INVENTORY);
+            if (inv != null)
+            {
+                Item[] items = inv.getItems();
+                for (int slot = 0; slot < items.length; slot++)
+                {
+                    Item item = items[slot];
+                    if (item != null && item.getId() > 0)
+                    {
+                        ItemComposition comp = itemManager.getItemComposition(item.getId());
+                        if (comp != null && (lowerTarget.isEmpty() || comp.getName().toLowerCase().contains(lowerTarget)))
+                        {
+                            log.info("[NATIVE AI] Consuming food: {} (slot {})", comp.getName(), slot);
+                            client.menuAction(slot, ComponentID.INVENTORY_CONTAINER, MenuAction.ITEM_FIRST_OPTION, item.getId(), item.getId(), "Eat", comp.getName());
+
+                            lastExecutedAction = actionType;
+                            lastExecutedTarget = targetName;
+                            lastExecutedTick = tickCount;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
