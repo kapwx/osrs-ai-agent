@@ -7,7 +7,7 @@ class Coordinates(BaseModel):
 
 class AgentAction(BaseModel):
     action_type: str = Field(
-        description="The primary action to take: 'IDLE', 'ATTACK_NPC', 'CLICK_OBJECT', 'WALK_TO', 'EAT_FOOD', 'BANK_DEPOSIT'"
+        description="The primary action to take: 'IDLE', 'ATTACK_NPC', 'TALK_TO_NPC', 'CONTINUE_DIALOGUE', 'CLICK_OBJECT', 'WALK_TO', 'EAT_FOOD', 'BANK_DEPOSIT'"
     )
     target_id: Optional[int] = Field(
         default=None,
@@ -15,11 +15,19 @@ class AgentAction(BaseModel):
     )
     target_name: Optional[str] = Field(
         default=None,
-        description="Name of the target entity, object, or item (e.g. 'Goblin', 'Tree', 'Lobster')"
+        description="Name of the target entity, object, or item (e.g. 'Gielinor Guide', 'Goblin', 'Tree', 'Shrimps')"
     )
     coordinates: Optional[Coordinates] = Field(
         default=None,
         description="Destination coordinates if moving"
+    )
+    canvas_x: Optional[int] = Field(
+        default=None,
+        description="Calculated pixel X coordinate on RuneLite canvas to click"
+    )
+    canvas_y: Optional[int] = Field(
+        default=None,
+        description="Calculated pixel Y coordinate on RuneLite canvas to click"
     )
     reasoning: str = Field(
         description="Detailed strategic explanation of why this action was decided based on current HP, inventory, and surroundings"
