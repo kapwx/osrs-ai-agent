@@ -2,6 +2,7 @@ package com.agent;
 
 import com.google.gson.Gson;
 import com.google.inject.Provides;
+import java.awt.Rectangle;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -16,10 +17,15 @@ import net.runelite.api.ItemContainer;
 import net.runelite.api.InventoryID;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.NPC;
+import net.runelite.api.Perspective;
 import net.runelite.api.Player;
+import net.runelite.api.Point;
 import net.runelite.api.Skill;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.GameTick;
+import net.runelite.api.widgets.ComponentID;
+import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
@@ -36,7 +42,7 @@ import okhttp3.Response;
 @Slf4j
 @PluginDescriptor(
     name = "OSRS AI Agent Bridge",
-    description = "Streams local player and environment state to AI Brain Middleware",
+    description = "Streams local player, environment state, and screen projections to AI Brain Middleware",
     tags = {"ai", "bot", "agent", "bridge", "telemetry"}
 )
 public class AgentPlugin extends Plugin
@@ -111,6 +117,17 @@ public class AgentPlugin extends Plugin
         state.put("animation", localPlayer.getAnimation());
         state.put("interacting", localPlayer.getInteracting() != null ? localPlayer.getInteracting().getName() : null);
 
+        // Dialogue check (very common on Tutorial Island & Quests)
+        Widget npcDialog = client.getWidget(ComponentID.DIALOG_NPC_TEXT);
+        Widget playerDialog = client.getWidget(ComponentID.DIALOG_PLAYER_TEXT);
+        Widget optionDialog = client.getWidget(ComponentID.DIALOG_OPTION_OPTIONS);
+        Widget spriteDialog = client.getWidget(ComponentID.DIALOG_SPRITE_TEXT);
+        boolean isDialogueActive = (npcDialog != null && !npcDialog.isHidden()) ||
+                                   (playerDialog != null && !playerDialog.isHidden()) ||
+                                   (optionDialog != null && !optionDialog.isHidden()) ||
+                                   (spriteDialog != null && !spriteDialog.isHidden());
+        state.put("dialogue_active", isDialogueActive);
+
         // Stats
         Map<String, Object> stats = new HashMap<>();
         stats.put("hp_current", client.getBoostedSkillLevel(Skill.HITPOINTS));
@@ -120,8 +137,9 @@ public class AgentPlugin extends Plugin
         stats.put("run_energy", client.getEnergy());
         state.put("stats", stats);
 
-        // 2. Inventory
+        // 2. Inventory & slot screen coordinates
         ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
+        Widget invWidget = client.getWidget(ComponentID.INVENTORY_CONTAINER);
         List<Map<String, Object>> items = new ArrayList<>();
         if (inventory != null)
         {
@@ -137,6 +155,21 @@ public class AgentPlugin extends Plugin
                     itemData.put("id", item.getId());
                     itemData.put("name", comp != null ? comp.getName() : "Unknown");
                     itemData.put("quantity", item.getQuantity());
+
+                    if (invWidget != null)
+                    {
+                        Widget slotWidget = invWidget.getChild(slot);
+                        if (slotWidget != null)
+                        {
+                            Rectangle bounds = slotWidget.getBounds();
+                            if (bounds != null && bounds.width > 0)
+                            {
+                                itemData.put("canvas_x", (int) bounds.getCenterX());
+                                itemData.put("canvas_y", (int) bounds.getCenterY());
+                            }
+                        }
+                    }
+
                     items.add(itemData);
                 }
             }
@@ -144,7 +177,7 @@ public class AgentPlugin extends Plugin
         state.put("inventory", items);
         state.put("inventory_count", items.size());
 
-        // 3. Nearby NPCs
+        // 3. Nearby NPCs with 2D Canvas & Minimap Screen Projections
         List<Map<String, Object>> npcs = new ArrayList<>();
         for (NPC npc : client.getNpcs())
         {
@@ -161,6 +194,25 @@ public class AgentPlugin extends Plugin
                     npcData.put("distance", distance);
                     npcData.put("x", npcLoc.getX());
                     npcData.put("y", npcLoc.getY());
+
+                    LocalPoint localPoint = npc.getLocalLocation();
+                    if (localPoint != null)
+                    {
+                        Point canvasPt = Perspective.localToCanvas(client, localPoint, client.getPlane());
+                        if (canvasPt != null)
+                        {
+                            npcData.put("canvas_x", canvasPt.getX());
+                            npcData.put("canvas_y", canvasPt.getY());
+                        }
+
+                        Point minimapPt = Perspective.localToMinimap(client, localPoint);
+                        if (minimapPt != null)
+                        {
+                            npcData.put("minimap_x", minimapPt.getX());
+                            npcData.put("minimap_y", minimapPt.getY());
+                        }
+                    }
+
                     npcs.add(npcData);
                 }
             }
